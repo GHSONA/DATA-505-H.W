@@ -1,0 +1,117 @@
+---
+title: "Assignment 2 Data-505"
+author: "Ghson Alotibi"
+date: "2025-02-02"
+format: 
+  html:
+    embed-resources: true
+---
+
+**Abstract:**
+
+This blog post walks through the process of feature engineering, model training, and evaluation using a wine dataset. The post is available as both an HTML file and a .qmd file hosted on GitHub Pages. The code and explanations are provided in R, utilizing libraries such as tidyverse, caret, and fastDummies.
+
+
+**Step Up Code:**
+```{r}
+library(tidyverse)
+library(caret)
+library(fastDummies)
+wine <- readRDS(gzcon(url("https://github.com/cd-public/D505/raw/master/dat/wine.rds")))
+```
+
+**Explanataion:**
+
+> <span style="color:red;font-weight:bold"></span>: *
+- library(tidyverse): Loads the tidyverse package for data manipulation and visualization
+- library(caret): Loads the caret package for machine learning workflows
+- library(fastDummies): Loads package for creating dummy variables
+- The last line loads the wine dataset from a GitHub URL using gzcon*
+
+# Feature Engineering
+
+We begin by engineering an number of features.
+
+1. Create a total of 10 features (including points). 
+2. Remove all rows with a missing value. 
+3. Ensure only log(price) and engineering features are the only columns that remain in the `wino` dataframe.
+
+```{r}
+# Create engineered features
+wino <- wine %>%
+    # Create log price
+    mutate(lprice = log(price)) %>%
+    # Feature 1: Standardized points
+    mutate(std_points = scale(points) %>% as.vector) %>%
+    # Feature 2: High-end wine flag (price > 50)
+    mutate(is_premium = price > 50) %>%
+    # Feature 3: Word count in description
+    mutate(description_length = str_count(description, '\\w+')) %>%
+    # Feature 4: Country grouping
+    mutate(country = fct_lump(country, 5)) %>%
+    # Feature 5: Major variety flag
+    mutate(major_variety = fct_lump(variety, 3)) %>%
+    # Feature 6: Has designation
+    mutate(has_designation = !is.na(designation)) %>%
+    # Feature 7: Province grouping
+    mutate(major_province = fct_lump(province, 4)) %>%
+    # Feature 8: Description mentions "rich" or "complex"
+    mutate(is_complex = str_detect(tolower(description), "rich|complex")) %>%
+    # Feature 9: Description sentiment (mentions "excellent" or "outstanding")
+    mutate(positive_review = str_detect(tolower(description), "excellent|outstanding")) %>%
+    # Convert categorical variables to dummies
+    dummy_cols(select_columns = c("country", "major_variety", "major_province")) %>%
+    # Select final features and remove NA
+    select(lprice, std_points, is_premium, description_length, 
+           has_designation, is_complex, positive_review,
+           starts_with("country_"), starts_with("major_variety_"), 
+           starts_with("major_province_")) %>%
+    drop_na()
+```
+
+# Caret
+
+We now use a train/test split to evaluate the features.
+
+1. Use the Caret library to partition the wino dataframe into an 80/20 split. 
+2. Run a linear regression with bootstrap resampling. 
+3. Report RMSE on the test partition of the data.
+
+```{r}
+# Create train/test split
+set.seed(123)  # for reproducibility
+train_index <- createDataPartition(wino$lprice, p = 0.8, list = FALSE)
+train_data <- wino[train_index, ]
+test_data <- wino[-train_index, ]
+```
+
+```{r}
+# Train model with bootstrap resampling
+model <- train(
+    lprice ~ .,
+    data = train_data,
+    method = "lm",
+    trControl = trainControl(
+        method = "boot",
+        number = 25
+    )
+)
+```
+
+
+```{r}
+# Test set performance
+# Calculate RMSE on test data
+predictions <- predict(model, test_data)
+test_rmse <- sqrt(mean((test_data$lprice - predictions)^2))
+print(paste("Test RMSE:", round(test_rmse, 4)))
+```
+# Variable selection
+
+We now graph the importance of your 10 features.
+
+```{r}
+# Variable importance
+importance <- varImp(model, scale = TRUE)
+plot(importance)
+```
