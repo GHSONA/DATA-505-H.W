@@ -1,0 +1,152 @@
+---
+title: $K$NN
+author: "Ghson Alotibi"
+date: "02/10/2025"
+
+format: 
+  html:  # You will quite likely want to change all but the last one, to taste
+    theme: superhero  
+    mainfont: monospace
+    highlight-style: github
+    title-block-banner: true
+    embed-resources: true
+
+---
+
+**Abstract:**
+
+This is a technical blog post of **both** an HTML file *and* [.qmd file](https://raw.githubusercontent.com/cd-public/D505/refs/heads/master/hws/src/knn.qmd) hosted on GitHub pages.
+
+# 0. Quarto Type-setting
+
+- This document is rendered with Quarto, and configured to embed an images using the `embed-resources` option in the header.
+- If you wish to use a similar header, here's is the format specification for this document:
+
+```email
+format: 
+  html:
+    embed-resources: true
+```
+
+# 1. Setup
+
+```{r}
+library(tidyverse)
+library(caret)
+wine <- readRDS(gzcon(url("https://github.com/cd-public/D505/raw/master/dat/pinot.rds")))
+```
+
+## 2. $K$NN Concepts
+
+> <span style="color:red;font-weight:bold"></span>: *With a small K value (e.g., K=1 or K=3), the model becomes highly sensitive to local patterns and individual data points. While this can capture fine details in the data, it often leads to overfitting - meaning the model performs well on training data but poorly on new, unseen data.
+Using larger K values creates smoother decision boundaries and makes the model more resistant to noise. However, if K is too large, the model may oversmooth and miss important patterns in the data, leading to underfitting.
+The optimal K value typically depends on your dataset size and the inherent noise in your data. A common practice is to test different K values and select the one that minimizes cross-validation error.*
+
+## 3. Feature Engineering
+
+1. Create a version of the year column that is a *factor* (instead of numeric).
+2. Create dummy variables that indicate the presence of "cherry", "chocolate" and "earth" in the description.
+  - Take care to handle upper and lower case characters.
+3. Create 3 new features that represent the interaction between *time* and the cherry, chocolate and earth inidicators.
+4. Remove the description column from the data.
+
+```{r}
+# Convert year to factor
+wine$year_factor <- as.factor(wine$year)
+
+# Create dummy variables for specific terms
+wine$has_cherry <- grepl("cherry|Cherry", wine$description)
+wine$has_chocolate <- grepl("chocolate|Chocolate", wine$description)
+wine$has_earth <- grepl("earth|Earth", wine$description)
+
+# Create interaction terms
+wine$cherry_time <- wine$has_cherry * (wine$year - min(wine$year))
+wine$chocolate_time <- wine$has_chocolate * (wine$year - min(wine$year))
+wine$earth_time <- wine$has_earth * (wine$year - min(wine$year))
+
+# Remove description column
+wine <- wine %>% select(-description)
+```
+## 4. Preprocessing
+
+1. Preprocess the dataframe from the previous code block using BoxCox, centering and scaling of the numeric features
+2. Create dummy variables for the `year` factor column
+
+```{r}
+# Identify numeric columns
+numeric_cols <- sapply(wine, is.numeric)
+numeric_cols <- names(wine)[numeric_cols]
+numeric_cols <- numeric_cols[!numeric_cols %in% c("year")] # exclude year since we'll use factor version
+
+# Create preprocessing object
+preproc <- preProcess(wine[numeric_cols], 
+                     method = c("BoxCox", "center", "scale"))
+
+# Apply preprocessing
+wine_processed <- predict(preproc, wine)
+
+# Create dummy variables for year
+dummy_year <- dummyVars("~ year_factor", data = wine_processed)
+year_dummy_df <- predict(dummy_year, wine_processed)
+
+# Combine processed data with dummy variables
+wine_final <- cbind(wine_processed, year_dummy_df)
+wine_final <- wine_final %>% select(-year_factor, -year)
+```
+
+
+## 5. Running $K$NN
+
+1. Split the dataframe into an 80/20 training and test set
+2. Use Caret to run a $K$NN model that uses our engineered features to predict province
+  - use 5-fold cross validated subsampling 
+  - allow Caret to try 15 different values for $K$
+3. Display the confusion matrix on the test data
+
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Ensure province is a factor
+wine_final$province <- as.factor(wine_final$province)
+
+# Create training/test split
+trainIndex <- createDataPartition(wine_final$province, p = 0.8, list = FALSE)
+training <- wine_final[trainIndex,]
+testing <- wine_final[-trainIndex,]
+
+# Set up cross-validation
+ctrl <- trainControl(method = "cv",
+                    number = 5)
+
+# Train KNN model
+knn_model <- train(province ~ .,
+                  data = training,
+                  method = "knn",
+                  trControl = ctrl,
+                  tuneLength = 15)
+
+# Make predictions on test set
+predictions <- predict(knn_model, newdata = testing)
+
+# Ensure predictions and actual values have the same levels
+predictions <- factor(predictions, levels = levels(testing$province))
+
+# Create confusion matrix
+conf_matrix <- confusionMatrix(predictions, testing$province)
+print(conf_matrix)
+
+```
+
+## 6. Kappa
+
+How do we determine whether a Kappa value represents a good, bad or some other outcome?
+
+> <span style="color:red;font-weight:bold"></span>: *The Kappa value in our results is 0.3338, which indicates "fair agreement" according to the standard interpretation scale.*
+
+## 7. Improvement
+
+How can we interpret the confusion matrix, and how can we improve in our predictions?
+
+> <span style="color:red;font-weight:bold"></span>: *We can interpret it based on our confusion matrix analysis, our model faces several challenges that affect its performance. The main issues include poor prediction of smaller classes like Marlborough, New York, and Casablanca Valley (with sensitivities as low as 0-3.85%), and a strong bias toward predicting California wines. To improve the model's performance, we could implement several strategies: addressing class imbalance through techniques like SMOTE or class weights, enhancing our feature set with additional wine characteristics and meaningful interaction terms, and considering alternative modeling approaches such as ensemble methods or hierarchical classification. Given the current low balanced accuracy for several classes, these improvements could significantly enhance the model's overall pred
