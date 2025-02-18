@@ -1,0 +1,182 @@
+---
+title: "Conditional Probability"
+author: "Ghson Alotibi"
+date: "02/17/2025"
+output: html_document
+---
+
+**Abstract:**
+
+This is a technical blog post of both an HTML file and .qmd file hosted on GitHub pages.
+
+
+1. Setup
+
+Step Up Code:
+
+```{r}
+sh <- suppressPackageStartupMessages
+sh(library(tidyverse))
+sh(library(caret))
+wine <- readRDS(gzcon(url("https://github.com/cd-public/D505/raw/master/dat/pinot.rds")))
+```
+
+#2. Conditional Probability
+
+Calculate the probability that a Pinot comes from Burgundy given it has the word 'fruit' in the description.
+
+$$
+P({\rm Burgundy}~|~{\rm Fruit})
+$$
+
+```{r}
+wine_data <- wine %>%
+  mutate(has_fruit = str_detect(description, "fruit"),
+         is_burgundy = province == "Burgundy")
+P_Burgundy <- mean(wine_data$is_burgundy)
+P_Fruit <- mean(wine_data$has_fruit)
+P_Fruit_given_Burgundy <- mean(wine_data$has_fruit[wine_data$is_burgundy])
+P_Burgundy_given_Fruit <- (P_Fruit_given_Burgundy * P_Burgundy) / P_Fruit
+
+P_Burgundy_given_Fruit
+```
+
+
+#3. Naive Bayes Algorithm
+
+We train a naive bayes algorithm to classify a wine's province using: 1. An 80-20 train-test split. 2. Three features engineered from the description 3. 5-fold cross validation.
+
+We report Kappa after using the model to predict provinces in the holdout sample.
+
+```{r}
+wine_features <- wine %>%
+  mutate(
+    has_fruit = str_detect(description, "fruit"),
+    has_cherry = str_detect(description, "cherry"),
+    has_earth = str_detect(description, "earth")
+  ) %>%
+  select(province, has_fruit, has_cherry, has_earth)
+
+set.seed(505)
+train_index <- createDataPartition(wine_features$province, p = 0.8, list = FALSE)
+train_data <- wine_features[train_index, ]
+test_data <- wine_features[-train_index, ]
+
+fit <- train(
+  province ~ .,
+  data = train_data,
+  method = "naive_bayes",
+  metric = "Kappa",
+  trControl = trainControl(method = "cv", number = 5)
+)
+predictions <- predict(fit, test_data)
+confusionMatrix(predictions, factor(test_data$province))$overall["Kappa"]
+```
+
+#4. Frequency Differences
+
+We find the three words that most distinguish New York Pinots from all other Pinots.
+
+```{r}
+word_frequencies <- wine %>%
+  # Filter for New York
+  mutate(is_ny = province == "New_York") %>%
+  # Tokenize words
+  unnest_tokens(word, description) %>%
+  # Remove stop words
+  anti_join(stop_words) %>%
+  # Remove wine-specific common words
+  filter(!word %in% c("wine", "pinot")) %>%
+  # Count word frequencies
+  group_by(word, is_ny) %>%
+  summarize(n = n()) %>%
+  # Calculate proportion differences
+  group_by(word) %>%
+  filter(n() == 2) %>%
+  pivot_wider(names_from = is_ny, values_from = n, values_fill = 0) %>%
+  mutate(
+    ny_prop = `TRUE` / sum(wine$province == "New_York"),
+    other_prop = `FALSE` / sum(wine$province != "New_York"),
+    diff = ny_prop - other_prop
+  ) %>%
+  arrange(desc(diff)) %>%
+  head(3)
+
+word_frequencies
+```
+
+```{r}
+wine %>%
+  unnest_tokens(word, description) %>%
+  anti_join(stop_words) %>%
+  filter(!word %in% c("wine", "pinot")) %>%
+  group_by(province, word) %>%
+  summarize(freq = n()) %>%
+  mutate(log_freq = log(freq)) %>%
+  ggplot(aes(x = log_freq, fill = province)) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  labs(
+    title = "Log Word Frequency Distribution by Province",
+    x = "Log Frequency",
+    y = "Density",
+    fill = "Province"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+#5. Extension
+
+Either do this as a bonus problem, or delete this section.
+
+Calculate the variance of the logged word-frequency distributions for each province.
+
+```{r}
+word_variances <- wine %>%
+  # Tokenize and clean
+  unnest_tokens(word, description) %>%
+  anti_join(stop_words) %>%
+  filter(!word %in% c("wine", "pinot")) %>%
+  # Calculate frequencies by province
+  group_by(province, word) %>%
+  summarize(freq = n()) %>%
+  # Log transform frequencies
+  mutate(log_freq = log(freq)) %>%
+  # Calculate variance for each province
+  group_by(province) %>%
+  summarize(variance = var(log_freq))
+
+word_variances
+```
+
+```{r}
+word_frequencies %>%
+  head(10) %>%  # Show top 10 differentiating words
+  mutate(word = reorder(word, diff)) %>%
+  ggplot(aes(x = word, y = diff)) +
+  geom_col() +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Words that Distinguish New York Pinots",
+    x = "Word",
+    y = "Difference in Proportion (NY - Other)",
+    caption = "Positive values indicate words more common in NY Pinots"
+  )
+```
+
+```{r}
+conf_matrix <- confusionMatrix(predictions, factor(test_data$province))
+conf_data <- as.data.frame(conf_matrix$table)
+ggplot(conf_data, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Naive Bayes Confusion Matrix",
+    x = "Actual Province",
+    y = "Predicted Province",
+    fill = "Frequency"
+  )
+```
