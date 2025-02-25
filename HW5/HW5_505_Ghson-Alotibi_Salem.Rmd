@@ -1,0 +1,159 @@
+---
+title: "Classification"
+author: "Ghson Alotibi"
+date: "02/24/2025"
+
+---
+
+**Abstract:**
+
+This is a technical blog post of **both** an HTML file *and* [.qmd file](https://raw.githubusercontent.com/cd-public/D505/refs/heads/master/hws/src/classify.qmd) hosted on GitHub pages.
+
+# 0. Quarto Type-setting
+
+- This document is rendered with Quarto, and configured to embed an images using the `embed-resources` option in the header.
+- If you wish to use a similar header, here's is the format specification for this document:
+
+```email: "gfalotibi@willamette.edu"
+format: 
+  html:
+    embed-resources: true
+```
+
+# 1. Setup
+
+**Step Up Code:**
+
+```{r}
+sh <- suppressPackageStartupMessages
+sh(library(tidyverse))
+sh(library(caret))
+sh(library(naivebayes))
+sh(library(pROC)) # For ROC curves
+sh(library(tidytext)) # For text processing
+sh(library(SnowballC)) # For stemming
+
+wine <- readRDS(gzcon(url("https://github.com/cd-public/D505/raw/master/dat/pinot.rds")))
+```
+
+# 2. Logistic Concepts
+
+Why do we call it Logistic Regression even though we are using the technique for classification?
+
+> <span style="color:red;font-weight:bold">TODO</span>: *Logistic regression is "regression" despite being used primarily for classification because it estimates the continuous probability of class membership rather than directly predicting discrete classes. The algorithm fits a regression model to the log-odds (logit) of the target variable, which follows a linear relationship with the predictors.*
+
+$$
+log( p/1−p )=β0+β1 x1 + β2 x2 +...+βn xn
+$$
+
+# 3. Modeling
+
+We train a logistic regression algorithm to classify a whether a wine comes from Marlborough using:
+
+1. An 80-20 train-test split.
+2. Three features engineered from the description
+3. 5-fold cross validation.
+
+We report Kappa after using the model to predict provinces in the holdout sample.
+
+```{r}
+# Text processing functions
+desc_to_words <- function(df, omits) {
+  df %>%
+    unnest_tokens(word, description) %>%
+    anti_join(stop_words) %>% # get rid of stop words
+    filter(!(word %in% omits))
+}
+
+words_to_stems <- function(df) {
+  df %>%
+    mutate(word = wordStem(word))
+}
+
+filter_by_count <- function(df, j) {
+  df %>%
+    count(id, word) %>%
+    group_by(id) %>% mutate(exists = (n>0)) %>% ungroup %>%
+    group_by(word) %>%
+    mutate(total = sum(n)) %>%
+    filter(total > j)
+}
+
+pivoter <- function(words, df) {
+  words %>%
+    pivot_wider(id_cols = id, names_from = word, values_from = exists, values_fill = FALSE) %>%
+    right_join(select(df, id, province)) %>%
+    drop_na() %>%
+    select(-id)
+}
+
+# Extract features from wine descriptions
+words <- desc_to_words(wine, c("wine", "pinot", "vineyard"))
+stems <- words_to_stems(words)
+filtered_stems <- filter_by_count(stems, 100)
+
+# Create feature matrix
+wino <- pivoter(filtered_stems, wine)
+
+# Create binary target variable for Marlborough
+wino <- wino %>%
+  mutate(marlborough = factor(province == "Marlborough")) %>%
+  select(-province)
+
+# Create train-test split
+set.seed(123) # For reproducibility
+wine_index <- createDataPartition(wino$marlborough, p = 0.80, list = FALSE)
+train <- wino[wine_index, ]
+test <- wino[-wine_index, ]
+
+# Train logistic regression model with cross-validation
+control <- trainControl(method = "cv", number = 5)
+fit <- train(
+  marlborough ~ .,
+  data = train,
+  trControl = control,
+  method = "glm",
+  family = "binomial"
+)
+
+# Evaluate on test set
+pred <- predict(fit, newdata = test)
+conf_matrix <- confusionMatrix(pred, test$marlborough)
+
+# Display results
+print(fit)
+print(conf_matrix)
+
+# Show top predictors
+coef_summary <- summary(fit$finalModel)$coefficients
+top_predictors <- coef_summary[order(-abs(coef_summary[,1])),][1:10,]
+print(top_predictors)
+```
+
+
+# 4. Binary vs Other Classification
+
+What is the difference between determining some form of classification through logistic regression versus methods like $K$-NN and Naive Bayes which performed classifications.
+
+> <span style="color:red;font-weight:bold">TODO</span>: *Logistic regression is a parametric model that assumes a linear relationship between predictors and the log-odds of the outcome, making it ideal for linearly separable data. In contrast,𝐾-Nearest Neighbors (K-NN) is a non-parametric method that classifies based on the majority vote of its closest neighbors, allowing for non-linear decision boundaries but requiring high computation for large datasets. Naïve Bayes, a probabilistic classifier, applies Bayes' theorem under the assumption of feature independence, making it highly efficient for text classification and high-dimensional data, though its assumptions may not always hold. Each method has strengths, with logistic regression excelling in interpretability, K-NN handling complex decision boundaries, and Naïve Bayes being fast and scalable.*
+
+
+# 5. ROC Curves
+
+We can display an ROC for the model to explain your model's quality.
+
+```{r}
+
+# Generate predicted probabilities
+prob <- predict(fit, newdata = test, type = "prob")[,2]
+
+# Create ROC curve
+roc_curve <- roc(test$marlborough, prob)
+auc_value <- auc(roc_curve)
+
+# Plot ROC curve
+plot(roc_curve, main = paste("ROC Curve (AUC =", round(auc_value, 3), ")"))
+abline(a = 0, b = 1, lty = 2, col = "gray")
+```
+
+> <span style="color:red;font-weight:bold"></span>:* ROC curve (AUC = 0.958) indicates excellent model performance, meaning it effectively distinguishes between classes. The curve's sharp rise suggests high sensitivity and specificity, with minimal false positives and false negatives. An AUC close to 1.0 confirms strong discriminative power, while the dashed diagonal line represents a random classifier (AUC = 0.5).*
